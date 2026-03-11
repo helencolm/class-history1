@@ -106,7 +106,7 @@ if view_mode == "screen":
     # ------------------ 大屏端 ------------------
     st_autorefresh(interval=3000, limit=None, key="screen_refresh")
     
-    col_main, col_side = st.columns([3, 1.2]) # 稍微加宽一点右侧，给榜单留空间
+    col_main, col_side = st.columns([3, 1.2])
     
     with col_main:
         st.markdown("<h1 style='text-align: center;'>🎯 《学生心理与教育》课堂座位实时热力图</h1>", unsafe_allow_html=True)
@@ -165,10 +165,8 @@ if view_mode == "screen":
                 cols_layout[ui_col_index].markdown(html, unsafe_allow_html=True)
 
     with col_side:
-        # ---- 上半部分：排行榜单 ----
         st.header("🏆 排行榜单")
         conn = sqlite3.connect(DB_FILE)
-        # 计算每个人的总分进行排名
         leaderboard_df = pd.read_sql_query("""
             SELECT student_name, SUM(points) as total_pts 
             FROM logs 
@@ -204,7 +202,6 @@ if view_mode == "screen":
 
         st.markdown("---")
         
-        # ---- 下半部分：实时动态 ----
         st.subheader("📢 实时动态")
         logs_df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 6", conn)
         conn.close()
@@ -288,6 +285,9 @@ else:
     # ------------------ 学生端 ------------------
     st.title("🚀 《学生心理与教育》课堂签到与加分系统")
     
+    # 将自动刷新统一放置在页面顶部，并全局生效
+    st_autorefresh(interval=5000, limit=None, key="global_student_refresh")
+    
     if not is_open:
         st.error("🛑 老师已关闭签到/加分通道。")
         st.stop()
@@ -318,7 +318,6 @@ else:
     else:
         st.success(f"你好，{st.session_state.stu_name}")
         
-        # 新增了第三个 Tab：排行榜
         tab1, tab2, tab3 = st.tabs(["🪑 抢占座位", "🙋 答题加分", "🏆 排行榜单"])
         
         with tab1:
@@ -338,8 +337,12 @@ else:
                             available_seats.append(f"{prefix} {r}排-{c}座")
                 
                 if available_seats:
-                    selected_seat = st.selectbox("选择你实际坐的位置：", available_seats)
-                    if st.button("确认入座", type="primary"):
+                    # 【核心修复：引入表单冻结输入框状态，抵御后台刷新干扰】
+                    with st.form("seat_selection_form"):
+                        selected_seat = st.selectbox("选择你实际坐的位置：", available_seats)
+                        submit_seat = st.form_submit_button("确认入座", type="primary")
+                    
+                    if submit_seat:
                         parts = selected_seat.split(" ")
                         r = int(parts[1].split("-")[0].replace("排", ""))
                         c = int(parts[1].split("-")[1].replace("座", ""))
@@ -350,7 +353,7 @@ else:
                             if gained_points == 2: st.balloons()
                             st.rerun()
                         else:
-                            st.error("座位刚被抢走，请重选！")
+                            st.error("手慢了，该座位刚被别人抢走，请重新选择！")
                 else:
                     st.warning("教室已满座啦！")
 
@@ -362,7 +365,6 @@ else:
                 
         with tab3:
             st.subheader("🔥 实时排名")
-            st_autorefresh(interval=5000, limit=None, key="leaderboard_refresh")
             
             conn = sqlite3.connect(DB_FILE)
             leaderboard_df = pd.read_sql_query("""
@@ -379,7 +381,7 @@ else:
                     rank = i + 1
                     if rank == 1:
                         st.markdown(f"### 👑 榜一：{row['student_name']} ({row['total_pts']}分)")
-                        st.progress(min(row['total_pts'] / 10, 1.0)) # 趣味进度条
+                        st.progress(min(row['total_pts'] / 10, 1.0)) 
                     elif rank == 2:
                         st.markdown(f"#### 🥈 榜二：{row['student_name']} ({row['total_pts']}分)")
                     elif rank == 3:
@@ -409,8 +411,3 @@ else:
                 display_text = f"🧑‍🎓 <span style='color: #1E88E5;'>{row['student_name']} {action} (+{row['points']})</span>"
                 
             st.markdown(f"[{time_only}] {display_text}", unsafe_allow_html=True)
-
-
-
-
-
