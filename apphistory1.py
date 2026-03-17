@@ -32,7 +32,7 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. 数据库逻辑 (引入 IntegrityError 原子操作)
+# 2. 数据库读写逻辑
 # ==========================================
 def get_setting(key):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
@@ -53,7 +53,6 @@ def take_seat(row, col, stu_id, stu_name, class_name):
     points = 2 if row <= VIP_ROWS else 1
     action = f"入座 {row}排{col}座" if row > VIP_ROWS else f"抢占VIP {row}排{col}座"
     try:
-        # ✅ 原子插入，利用数据库主键锁死位置，高并发下绝不重复
         c.execute("INSERT INTO seats VALUES (?, ?, ?, ?, ?, ?)", (row, col, stu_id, stu_name, class_name, time_str))
         c.execute("INSERT INTO logs VALUES (?, ?, ?, ?, ?, ?)", (time_str, stu_id, stu_name, class_name, action, points))
         conn.commit(); conn.close(); return True, points
@@ -67,19 +66,19 @@ def add_bonus_points(stu_id, stu_name, class_name):
     conn.commit(); conn.close()
 
 # ==========================================
-# 3. 界面逻辑
+# 3. 界面逻辑分发
 # ==========================================
-st.set_page_config(layout="wide", page_title="课堂签到加分系统")
+st.set_page_config(layout="wide", page_title="课堂互动系统")
 view_mode = st.query_params.get("view", "student")
 current_pin = get_setting('current_pin')
 is_open = get_setting('class_open') == 'True'
 
 if view_mode == "screen":
-    # ------------------ 大屏端 (维持原有全彩热力图UI) ------------------
+    # ------------------ 大屏端 (实时热力图) ------------------
     st_autorefresh(interval=3000, limit=None, key="screen_refresh")
     col_main, col_side = st.columns([3, 1.2])
     with col_main:
-        st.markdown("<h1 style='text-align: center;'>🎯 《学生心理与教育》课堂座位实时热力图</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center;'>🎯 《学生心理与教育》课堂实时看板</h1>", unsafe_allow_html=True)
         if is_open: st.markdown(f"<h3 style='text-align: center; color: #D32F2F;'>今日签到口令：【 {current_pin} 】</h3>", unsafe_allow_html=True)
         else: st.markdown("<h3 style='text-align: center; color: gray;'>🚫 签到通道已关闭</h3>", unsafe_allow_html=True)
         st.markdown("---")
@@ -106,78 +105,82 @@ if view_mode == "screen":
         if not lb_df.empty:
             for i, row in lb_df.iterrows():
                 rank = i+1; color = ["#D32F2F", "#E64A19", "#F57C00", "#388E3C", "#388E3C"][min(i, 4)]
-                t_label = ["👑 榜一", "🥈 榜二", "🥉 榜三", f"🏅 第 {rank} 名", f"🏅 第 {rank} 名"][min(i, 4)]
-                st.markdown(f"<div style='background-color: #fff; border: 2px solid {color}; border-radius: 8px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;'><span style='font-size: 16px; font-weight: bold; color: {color};'>{t_label}</span><span style='font-size: 18px; font-weight: bold;'>{row['student_name']} <span style='color: #D81B60;'>{row['total_pts']}分</span></span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='background-color: #fff; border: 2px solid {color}; border-radius: 8px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;'><span style='font-size: 15px; font-weight: bold; color: {color};'>{'👑 榜一' if rank==1 else ('🥈 榜二' if rank==2 else ('🥉 榜三' if rank==3 else f'🏅 第 {rank} 名'))}</span><span style='font-size: 16px; font-weight: bold;'>{row['student_name']} {row['total_pts']}分</span></div>", unsafe_allow_html=True)
         st.markdown("---"); st.subheader("📢 实时动态")
         conn = sqlite3.connect(DB_FILE); l_df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 6", conn); conn.close()
         if not l_df.empty:
             for _, r in l_df.iterrows():
                 tm = r['timestamp'].split(" ")[1]; ac = r['action']; bc = "#D81B60" if "答题" in ac else ("#FBC02D" if "VIP" in ac else "#1E88E5")
-                st.markdown(f"<div style='margin-bottom: 8px; padding: 8px; border-radius: 5px; background-color: #f8f9fa; border-left: 5px solid {bc};'><div style='font-size: 13px; font-weight: bold; color: #333;'>{'🔥' if '答题' in ac else '⭐' if 'VIP' in ac else '🧑‍🎓'} [{tm}] {r['student_name']}</div><div style='font-size: 13px; color: {bc}; margin-top: 2px;'>{ac} (+{r['points']})</div></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='margin-bottom: 8px; padding: 8px; border-radius: 5px; background-color: #f8f9fa; border-left: 5px solid {bc}; font-size: 12px;'><strong>{'🔥' if '答题' in ac else '⭐' if 'VIP' in ac else '🧑‍🎓'} [{tm}] {r['student_name']}</strong><br>{ac} (+{r['points']})</div>", unsafe_allow_html=True)
 
 elif view_mode == "admin":
-    # ------------------ 教师端 ------------------
+    # ------------------ 教师后台 (修正版) ------------------
     st.title("⚙️ 教师管理后台")
     if st.text_input("请输入管理员密码", type="password") == TEACHER_PWD:
         st.success("✅ 身份验证成功")
-        if st.button("🔄 生成新口令"): update_setting('current_pin', str(random.randint(1000, 9999))); st.rerun()
-        conn = sqlite3.connect(DB_FILE); df = pd.read_sql_query("SELECT * FROM logs", conn)
-        c = conn.cursor(); c.execute("SELECT class_name FROM seats ORDER BY timestamp ASC LIMIT 1"); cls_name = c.fetchone()
-        conn.close(); f_name = f"class_logs_{datetime.datetime.now(BJ_TZ).strftime('%Y%m%d')}_{cls_name[0] if cls_name else '未知'}.csv"
-        st.download_button("📊 下载日志 (CSV)", df.to_csv(index=False).encode('utf-8-sig'), f_name, "text/csv")
-        if st.button("🗑️ 清空所有数据", type="primary"): clear_all_data(); st.rerun()
+        
+        st.subheader("1. 课堂控制")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 刷新并更换口令", use_container_width=True):
+                update_setting('current_pin', str(random.randint(1000, 9999)))
+                st.rerun()
+        with c2:
+            if is_open:
+                if st.button("🛑 关闭签到通道", use_container_width=True):
+                    update_setting('class_open', 'False'); st.rerun()
+            else:
+                if st.button("🟢 重新开启签到", use_container_width=True):
+                    update_setting('class_open', 'True'); st.rerun()
+        
+        st.markdown("---")
+        st.subheader("2. 数据管理")
+        conn = sqlite3.connect(DB_FILE); all_logs = pd.read_sql_query("SELECT * FROM logs", conn)
+        c = conn.cursor(); c.execute("SELECT class_name FROM seats ORDER BY timestamp ASC LIMIT 1"); c_name = c.fetchone()
+        conn.close(); final_name = f"class_logs_{datetime.datetime.now(BJ_TZ).strftime('%Y%m%d')}_{c_name[0] if c_name else '未签到'}.csv"
+        
+        st.download_button("📊 导出今日清洗前数据 (CSV)", all_logs.to_csv(index=False).encode('utf-8-sig'), final_name, "text/csv", use_container_width=True)
+        
+        if st.button("🗑️ 清空今日数据 (下课必点)", type="primary", use_container_width=True):
+            clear_all_data(); st.rerun()
 
 else:
-    # ------------------ 学生端 (结构化重构版) ------------------
-    st.title("🚀 《学生心理与教育》签到系统")
-    if not is_open: st.error("🛑 老师已关闭签到/加分通道。"); st.stop()
+    # ------------------ 学生端 (结构化防错版) ------------------
+    st.title("🚀 课堂签到互动系统")
+    if not is_open: st.error("🛑 老师已关闭通道。"); st.stop()
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
     if not st.session_state.logged_in:
-        with st.form("login_form"):
-            cn = st.selectbox("学科与班级", CLASSES); sid = st.text_input("学号"); sn = st.text_input("姓名"); pin = st.text_input("口令")
-            if st.form_submit_button("进入系统"):
+        with st.form("login"):
+            cn = st.selectbox("选择班级", CLASSES); sid = st.text_input("学号"); sn = st.text_input("姓名"); pin = st.text_input("口令")
+            if st.form_submit_button("进入系统", use_container_width=True):
                 if pin == current_pin and sid and sn:
                     st.session_state.update({"class_name": cn, "stu_id": sid, "stu_name": sn, "logged_in": True}); st.rerun()
-                else: st.error("❌ 信息不全或口令错误")
+                else: st.error("❌ 信息或口令错误")
     else:
-        st.success(f"你好，{st.session_state.stu_name}")
-        st_autorefresh(interval=10000, limit=None, key="tab_refresh")
-        tab1, tab2, tab3 = st.tabs(["🪑 抢占座位", "🙋 答题加分", "🏆 排行榜单"])
-        with tab1:
-            conn = sqlite3.connect(DB_FILE); seats_df = pd.read_sql_query("SELECT * FROM seats", conn); conn.close()
-            my_seat = seats_df[seats_df['student_id'] == st.session_state.stu_id]
-            if not my_seat.empty:
-                st.info(f"✅ 你已入座：{my_seat.iloc[0]['row']}排-{my_seat.iloc[0]['col']}座")
+        st_autorefresh(interval=10000, limit=None, key="stu_refresh")
+        st.info(f"🧑‍🎓 {st.session_state.stu_name} | {st.session_state.class_name}")
+        t1, t2, t3 = st.tabs(["🪑 抢占座位", "🙋 答题加分", "🏆 排行榜"])
+        with t1:
+            conn = sqlite3.connect(DB_FILE); s_df = pd.read_sql_query("SELECT * FROM seats", conn); conn.close()
+            my = s_df[s_df['student_id'] == st.session_state.stu_id]
+            if not my.empty: st.success(f"✅ 已入座：{my.iloc[0]['row']}排-{my.iloc[0]['col']}座")
             else:
-                taken_set = set(zip(seats_df['row'], seats_df['col']))
-                # ✅ 核心修改点：选项直接存储 (行, 列, 前缀) 的元组，不再存字符串
-                available_seats = [None] 
+                tk = set(zip(s_df['row'], s_df['col'])); av = [None]
                 for r in range(1, ROWS + 1):
                     for c in range(1, COLS + 1):
-                        if (r, c) not in taken_set:
-                            prefix = "⭐[VIP区+2分]" if r <= VIP_ROWS else "🪑[普通区+1分]"
-                            available_seats.append((r, c, prefix))
-                
-                with st.form("seat_form"):
-                    # ✅ 核心修改点：通过 format_func 美化显示，但后台拿到的 x 是元组
-                    selected = st.selectbox("请在下方选择你的准确位置：", 
-                                          available_seats, 
-                                          format_func=lambda x: f"{x[2]} {x[0]}排-{x[1]}座" if x else "-- 请先点击选择座位 --")
-                    if st.form_submit_button("确认入座", type="primary"):
-                        if selected is None:
-                            st.warning("⚠️ 请选择一个具体的座位！")
-                        else:
-                            # ✅ 核心修改点：不再解析字符串，直接解包元组，万无一失
-                            r_val, c_val, _ = selected
-                            success, pts = take_seat(r_val, c_val, st.session_state.stu_id, st.session_state.stu_name, st.session_state.class_name)
-                            if success: st.success(f"✅ 入座成功！获得 {pts} 分！"); st.rerun()
-                            else: st.error("❌ 手慢了！该座位已被抢先占领，请刷新重选！")
-        with tab2:
-            if st.button("🙋 我回答了问题，加 2 分！", use_container_width=True):
-                add_bonus_points(st.session_state.stu_id, st.session_state.stu_name, st.session_state.class_name); st.success("✅ 加分成功！")
-        with tab3:
-            st.subheader("🔥 实时排名")
-            conn = sqlite3.connect(DB_FILE); lb_df = pd.read_sql_query("SELECT student_name, SUM(points) as total_pts FROM logs GROUP BY student_name ORDER BY total_pts DESC LIMIT 10", conn); conn.close()
-            if not lb_df.empty:
-                for i, row in lb_df.iterrows(): st.markdown(f"**第 {i+1} 名：** {row['student_name']} ({row['total_pts']}分)")
+                        if (r, c) not in tk: av.append((r, c, "⭐VIP" if r<=VIP_ROWS else "🪑普通"))
+                with st.form("seat"):
+                    sel = st.selectbox("请准确点选座位：", av, format_func=lambda x: f"{x[2]} {x[0]}排-{x[1]}座" if x else "-- 点击下拉选择 --")
+                    if st.form_submit_button("确认提交", type="primary"):
+                        if sel:
+                            ok, p = take_seat(sel[0], sel[1], st.session_state.stu_id, st.session_state.stu_name, st.session_state.class_name)
+                            if ok: st.success(f"成功获得 {p} 分！"); st.rerun()
+                            else: st.error("被抢了，请刷新重试！")
+                        else: st.warning("未选择座位")
+        with t2:
+            if st.button("🙋 我刚回答了提问 (加2分)", use_container_width=True):
+                add_bonus_points(st.session_state.stu_id, st.session_state.stu_name, st.session_state.class_name); st.success("加分上墙！")
+        with t3:
+            conn = sqlite3.connect(DB_FILE); lb = pd.read_sql_query("SELECT student_name, SUM(points) as total FROM logs GROUP BY student_name ORDER BY total DESC LIMIT 10", conn); conn.close()
+            for i, r in lb.iterrows(): st.markdown(f"**{i+1}. {r['student_name']}** ({r['total']}分)")
